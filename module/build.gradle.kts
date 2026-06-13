@@ -15,8 +15,9 @@ android {
 
         externalNativeBuild {
             cmake {
-                cppFlags += listOf("-std=c++20", "-Wall", "-Wextra")
+                cppFlags += listOf("-std=c++20", "-Wall", "-Wextra", "-fvisibility=hidden")
                 arguments += listOf("-DANDROID_STL=c++_static")
+                abiFilters += listOf("arm64-v8a")
             }
         }
     }
