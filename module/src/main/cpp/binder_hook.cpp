@@ -1,19 +1,16 @@
 #include "binder_hook.h"
+#include "logger.h"
 #include "service_match.h"
 
-#include <android/log.h>
 #include <cerrno>
 #include <cstdint>
 #include <cstring>
 #include <dlfcn.h>
 #include <linux/android/binder.h>
+#include <string>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <unistd.h>
-
-#define LOG_TAG "Yukari"
-#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
-#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
 #ifndef BC_TRANSACTION_SG
 #define BC_TRANSACTION_SG _IOW('c', 17, struct binder_transaction_data_sg)
@@ -70,15 +67,15 @@ void *create_trampoline(void *target) {
 #endif
 }
 
-bool contains_keyword_utf16(const char16_t *chars, int32_t len) {
-    if (!chars || len <= 0 || len > 512) return false;
+std::string utf16_to_ascii(const char16_t *chars, int32_t len) {
     std::string ascii;
+    if (!chars || len <= 0 || len > 512) return ascii;
     ascii.reserve(static_cast<size_t>(len));
     for (int32_t i = 0; i < len; ++i) {
         const char16_t c = chars[i];
         ascii.push_back(c <= 0x7f ? static_cast<char>(c) : '?');
     }
-    return should_hide_service(ascii);
+    return ascii;
 }
 
 void overwrite_utf16(char16_t *chars, int32_t len) {
@@ -86,8 +83,9 @@ void overwrite_utf16(char16_t *chars, int32_t len) {
     for (int32_t i = 0; i < len; ++i) chars[i] = u'_';
 }
 
-void scrub_service_strings(uint8_t *parcel, size_t size) {
-    if (!parcel || size < sizeof(int32_t)) return;
+int scrub_service_strings(uint8_t *parcel, size_t size, const char *source) {
+    if (!parcel || size < sizeof(int32_t)) return 0;
+    int hits = 0;
     for (size_t off = 0; off + sizeof(int32_t) < size; ++off) {
         int32_t len = 0;
         std::memcpy(&len, parcel + off, sizeof(len));
@@ -95,21 +93,32 @@ void scrub_service_strings(uint8_t *parcel, size_t size) {
         const size_t str_off = off + sizeof(int32_t);
         const size_t bytes = static_cast<size_t>(len) * sizeof(char16_t);
         if (str_off + bytes > size) continue;
+
         auto *chars = reinterpret_cast<char16_t *>(parcel + str_off);
-        if (contains_keyword_utf16(chars, len)) {
+        const std::string value = utf16_to_ascii(chars, len);
+        if (should_hide_service(value)) {
             overwrite_utf16(chars, len);
-            LOGI("scrubbed service query string");
+            ++hits;
+            yukari_log_info("scrubbed %s service string: %s", source, value.c_str());
         }
     }
+    return hits;
 }
 
-void process_transaction(const binder_transaction_data &txn) {
+void process_service_manager_transaction(const binder_transaction_data &txn) {
     if (txn.data_size == 0 || txn.data.ptr.buffer == 0) return;
-    // Only scrub traffic aimed at the context manager. This is conservative and
-    // avoids touching arbitrary app Binder payloads.
     if (txn.target.handle != 0) return;
     auto *parcel = reinterpret_cast<uint8_t *>(txn.data.ptr.buffer);
-    scrub_service_strings(parcel, static_cast<size_t>(txn.data_size));
+    scrub_service_strings(parcel, static_cast<size_t>(txn.data_size), "request");
+}
+
+void process_reply_transaction(const binder_transaction_data &txn) {
+    if (txn.data_size == 0 || txn.data.ptr.buffer == 0) return;
+    auto *parcel = reinterpret_cast<uint8_t *>(txn.data.ptr.buffer);
+    // listServices/debug-info replies carry service names as String16 values.
+    // Replacing matching entries with same-length placeholders avoids changing
+    // Parcel layout while removing Duck-style keyword hits from enumeration.
+    scrub_service_strings(parcel, static_cast<size_t>(txn.data_size), "reply");
 }
 
 void process_binder_write_buffer(binder_write_read *bwr) {
@@ -125,25 +134,79 @@ void process_binder_write_buffer(binder_write_read *bwr) {
         if (cmd == BC_TRANSACTION || cmd == BC_REPLY) {
             if (ptr + sizeof(binder_transaction_data) > end) return;
             auto *txn = reinterpret_cast<binder_transaction_data *>(ptr);
-            if (cmd == BC_TRANSACTION) process_transaction(*txn);
+            if (cmd == BC_TRANSACTION) process_service_manager_transaction(*txn);
             ptr += sizeof(binder_transaction_data);
         } else if (cmd == BC_TRANSACTION_SG) {
             if (ptr + sizeof(binder_transaction_data_sg_local) > end) return;
             auto *txn = reinterpret_cast<binder_transaction_data_sg_local *>(ptr);
-            process_transaction(txn->transaction_data);
+            process_service_manager_transaction(txn->transaction_data);
             ptr += sizeof(binder_transaction_data_sg_local);
         } else {
-            // Unknown command sizes are version dependent. Stop rather than desync.
             return;
         }
     }
 }
 
-int hooked_ioctl(int fd, unsigned long request, void *arg) {
-    if (request == BINDER_WRITE_READ && arg) {
-        process_binder_write_buffer(reinterpret_cast<binder_write_read *>(arg));
+void process_binder_read_buffer(binder_write_read *bwr) {
+    if (!bwr || !bwr->read_buffer || !bwr->read_consumed) return;
+    auto *ptr = reinterpret_cast<uint8_t *>(bwr->read_buffer);
+    auto *end = ptr + bwr->read_consumed;
+
+    while (ptr + sizeof(uint32_t) <= end) {
+        uint32_t cmd = 0;
+        std::memcpy(&cmd, ptr, sizeof(cmd));
+        ptr += sizeof(cmd);
+
+        switch (cmd) {
+            case BR_REPLY: {
+                if (ptr + sizeof(binder_transaction_data) > end) return;
+                auto *txn = reinterpret_cast<binder_transaction_data *>(ptr);
+                process_reply_transaction(*txn);
+                ptr += sizeof(binder_transaction_data);
+                break;
+            }
+            case BR_TRANSACTION: {
+                if (ptr + sizeof(binder_transaction_data) > end) return;
+                ptr += sizeof(binder_transaction_data);
+                break;
+            }
+            case BR_NOOP:
+            case BR_TRANSACTION_COMPLETE:
+            case BR_DEAD_REPLY:
+            case BR_FAILED_REPLY:
+            case BR_FINISHED:
+                break;
+            case BR_INCREFS:
+            case BR_ACQUIRE:
+            case BR_RELEASE:
+            case BR_DECREFS:
+            case BR_ATTEMPT_ACQUIRE:
+                if (ptr + sizeof(uint32_t) + sizeof(binder_uintptr_t) > end) return;
+                ptr += sizeof(uint32_t) + sizeof(binder_uintptr_t);
+                break;
+            case BR_SPAWN_LOOPER:
+                break;
+            case BR_DEAD_BINDER:
+            case BR_CLEAR_DEATH_NOTIFICATION_DONE:
+                if (ptr + sizeof(binder_uintptr_t) > end) return;
+                ptr += sizeof(binder_uintptr_t);
+                break;
+            default:
+                return;
+        }
     }
-    return g_original_ioctl ? g_original_ioctl(fd, request, arg) : -1;
+}
+
+int hooked_ioctl(int fd, unsigned long request, void *arg) {
+    if (request != BINDER_WRITE_READ || !arg) {
+        return g_original_ioctl ? g_original_ioctl(fd, request, arg) : -1;
+    }
+
+    auto *bwr = reinterpret_cast<binder_write_read *>(arg);
+    process_binder_write_buffer(bwr);
+    const int ret = g_original_ioctl ? g_original_ioctl(fd, request, arg) : -1;
+    if (ret == 0) process_binder_read_buffer(bwr);
+    return ret;
 }
 
 bool install_inline_hook(void *symbol, void *replacement, void **original) {
@@ -170,18 +233,18 @@ void install_binder_hooks() {
     if (g_hook_installed) return;
     void *handle = dlopen("libc.so", RTLD_NOW);
     if (!handle) {
-        LOGE("dlopen libc.so failed: %s", dlerror());
+        yukari_log_error("dlopen libc.so failed: %s", dlerror());
         return;
     }
     void *symbol = dlsym(handle, "ioctl");
     if (!symbol) {
-        LOGE("dlsym ioctl failed: %s", dlerror());
+        yukari_log_error("dlsym ioctl failed: %s", dlerror());
         return;
     }
     if (!install_inline_hook(symbol, reinterpret_cast<void *>(hooked_ioctl), reinterpret_cast<void **>(&g_original_ioctl))) {
-        LOGE("inline ioctl hook failed errno=%d", errno);
+        yukari_log_error("inline ioctl hook failed errno=%d", errno);
         return;
     }
     g_hook_installed = true;
-    LOGI("ioctl hook installed at %p", g_ioctl_symbol);
+    yukari_log_info("ioctl hook installed at %p", g_ioctl_symbol);
 }
