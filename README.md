@@ -21,6 +21,28 @@ Matching is ASCII case-insensitive and built into the module:
 
 Users configure target applications only. The module does not stop or unregister services globally; filtering is scoped to selected application processes.
 
+## Artifacts
+
+CI produces two flashable module zips:
+
+- `Yukari.zip`: normal build
+- `Yukari-debug.zip`: debug build with file logging enabled
+
+Debug logs are written by injected target processes to:
+
+```text
+/data/adb/modules/Yukari/logs/yukari.log
+```
+
+## Current native behavior
+
+- Zygisk app specialization matches configured target packages.
+- Java `ServiceManager.sCache` entries containing fixed ROM keywords are removed.
+- Binder request filtering rewrites matching service lookup names before they reach ServiceManager.
+- Binder reply filtering rewrites matching `listServices` / service-manager reply names before the target app reads them.
+
+Reply filtering uses same-length placeholders instead of changing Parcel size. This removes Duck-style keyword hits while preserving Binder parcel layout.
+
 ## Configuration
 
 ```json
@@ -32,19 +54,10 @@ Users configure target applications only. The module does not stop or unregister
 }
 ```
 
-## Build artifacts
-
-GitHub Actions runs the native release build, packages the Magisk module, verifies that the Zygisk library is present, and uploads:
-
-```text
-Yukari-<commit-sha>/Yukari.zip
-```
-
-Local build:
+## Build
 
 ```bash
-gradle :module:assembleRelease
-bash scripts/package.sh
+gradle :module:assembleRelease :module:assembleDebug
+bash scripts/package.sh release
+bash scripts/package.sh debug
 ```
-
-The packaging script fails instead of producing an incomplete zip when `arm64-v8a.so` is missing.

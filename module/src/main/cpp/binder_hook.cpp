@@ -24,6 +24,7 @@ bool g_hook_installed = false;
 constexpr size_t kPatchSize = 16;
 uint8_t g_original_bytes[kPatchSize]{};
 void *g_ioctl_symbol = nullptr;
+thread_local bool g_waiting_for_service_manager_reply = false;
 
 struct binder_transaction_data_sg_local {
     binder_transaction_data transaction_data;
@@ -38,7 +39,6 @@ bool make_writable(void *addr) {
 
 void write_abs_jump(void *target, void *replacement) {
 #if defined(__aarch64__)
-    // ldr x17, #8; br x17; .quad replacement
     uint32_t patch[4] = {
         0x58000051u,
         0xd61f0220u,
@@ -108,17 +108,18 @@ int scrub_service_strings(uint8_t *parcel, size_t size, const char *source) {
 void process_service_manager_transaction(const binder_transaction_data &txn) {
     if (txn.data_size == 0 || txn.data.ptr.buffer == 0) return;
     if (txn.target.handle != 0) return;
+    g_waiting_for_service_manager_reply = true;
     auto *parcel = reinterpret_cast<uint8_t *>(txn.data.ptr.buffer);
     scrub_service_strings(parcel, static_cast<size_t>(txn.data_size), "request");
 }
 
 void process_reply_transaction(const binder_transaction_data &txn) {
+    if (!g_waiting_for_service_manager_reply) return;
+    g_waiting_for_service_manager_reply = false;
     if (txn.data_size == 0 || txn.data.ptr.buffer == 0) return;
     auto *parcel = reinterpret_cast<uint8_t *>(txn.data.ptr.buffer);
-    // listServices/debug-info replies carry service names as String16 values.
-    // Replacing matching entries with same-length placeholders avoids changing
-    // Parcel layout while removing Duck-style keyword hits from enumeration.
-    scrub_service_strings(parcel, static_cast<size_t>(txn.data_size), "reply");
+    const int hits = scrub_service_strings(parcel, static_cast<size_t>(txn.data_size), "reply");
+    if (hits > 0) yukari_log_info("filtered %d service-manager reply item(s)", hits);
 }
 
 void process_binder_write_buffer(binder_write_read *bwr) {
@@ -175,16 +176,6 @@ void process_binder_read_buffer(binder_write_read *bwr) {
             case BR_DEAD_REPLY:
             case BR_FAILED_REPLY:
             case BR_FINISHED:
-                break;
-            case BR_INCREFS:
-            case BR_ACQUIRE:
-            case BR_RELEASE:
-            case BR_DECREFS:
-            case BR_ATTEMPT_ACQUIRE:
-                if (ptr + sizeof(uint32_t) + sizeof(binder_uintptr_t) > end) return;
-                ptr += sizeof(uint32_t) + sizeof(binder_uintptr_t);
-                break;
-            case BR_SPAWN_LOOPER:
                 break;
             case BR_DEAD_BINDER:
             case BR_CLEAR_DEATH_NOTIFICATION_DONE:

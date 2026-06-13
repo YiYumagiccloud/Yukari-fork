@@ -1,15 +1,11 @@
 #include "binder_hook.h"
 #include "config.h"
+#include "logger.h"
 #include "service_cache.h"
 #include "zygisk.hpp"
 
-#include <android/log.h>
 #include <jni.h>
 #include <string>
-
-#define LOG_TAG "Yukari"
-#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
-#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
 namespace {
 YukariConfig g_config;
@@ -47,14 +43,14 @@ public:
             api_->setOption(zygisk::DLCLOSE_MODULE_LIBRARY);
             api_->setOption(zygisk::FORCE_DENYLIST_UNMOUNT);
         }
-        LOGI("matched target %s", g_package_name.c_str());
+        yukari_log_info("matched target %s", g_package_name.c_str());
     }
 
     void postAppSpecialize(const zygisk::AppSpecializeArgs *) override {
         if (!g_enabled_for_process) return;
         clear_service_manager_cache(env_);
         install_binder_hooks();
-        LOGI("enabled for %s", g_package_name.c_str());
+        yukari_log_info("enabled for %s", g_package_name.c_str());
     }
 
 private:
