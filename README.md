@@ -32,6 +32,9 @@ Users configure target applications only. The module does not stop or unregister
 }
 ```
 
-## Status
+## Layout
 
-Repository initialized. Native Zygisk implementation and packaging files will be maintained here.
+- `module/module.prop` Magisk module metadata
+- `module/config.json` default config
+- `module/src/main/cpp` native Zygisk source skeleton
+- `scripts/package.sh` creates a Magisk module zip after native build outputs are available
