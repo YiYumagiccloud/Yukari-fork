@@ -47,8 +47,13 @@ bool load_config(YukariConfig &out) {
         out = {};
         return false;
     }
-    out.enabled = text.find("\"enabled\"\s*:\s*false") == std::string::npos &&
-                  text.find("\"enabled\":false") == std::string::npos;
+    const auto enabled_key = text.find("\"enabled\"");
+    const auto false_value = enabled_key == std::string::npos
+        ? std::string::npos
+        : text.find("false", enabled_key);
+    const auto targets_key = text.find("\"targets\"");
+    out.enabled = false_value == std::string::npos ||
+                  (targets_key != std::string::npos && false_value > targets_key);
     out.targets = parse_targets_lenient(text);
     return true;
 }
