@@ -21,14 +21,6 @@ Matching is ASCII case-insensitive and built into the module:
 
 Users configure target applications only. The module does not stop or unregister services globally; filtering is scoped to selected application processes.
 
-## Current native behavior
-
-- Zygisk app specialization matches configured target packages.
-- Java `ServiceManager.sCache` entries containing fixed ROM keywords are removed.
-- An arm64 inline `ioctl` hook scrubs matching UTF-16 service names from context-manager Binder transactions before they reach ServiceManager.
-
-The reply-side filtering path for `listServices`/debug info is planned next; the current implementation focuses on service lookup requests and cache cleanup.
-
 ## Configuration
 
 ```json
@@ -40,18 +32,19 @@ The reply-side filtering path for `listServices`/debug info is planned next; the
 }
 ```
 
-## Layout
+## Build artifacts
 
-- `module/module.prop` Magisk module metadata
-- `module/config.json` default config
-- `module/src/main/cpp` native Zygisk source
-- `scripts/package.sh` creates a Magisk module zip after native build outputs are available
+GitHub Actions runs the native release build, packages the Magisk module, verifies that the Zygisk library is present, and uploads:
 
-## Build
+```text
+Yukari-<commit-sha>/Yukari.zip
+```
+
+Local build:
 
 ```bash
 gradle :module:assembleRelease
 bash scripts/package.sh
 ```
 
-A Gradle wrapper can be generated locally with `gradle wrapper --gradle-version 8.14.2` if needed.
+The packaging script fails instead of producing an incomplete zip when `arm64-v8a.so` is missing.
