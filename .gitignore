@@ -1,0 +1,7 @@
+*.o
+*.so
+*.zip
+build/
+.cxx/
+.externalNativeBuild/
+.DS_Store

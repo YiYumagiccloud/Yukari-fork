@@ -1,0 +1,6 @@
+id=Yukari
+name=Yukari
+version=0.1.0
+versionCode=1
+author=AkiHaza
+description=Hide custom ROM service signals from selected apps through Zygisk.
