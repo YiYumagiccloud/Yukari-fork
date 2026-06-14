@@ -29,7 +29,11 @@ CI produces two flashable module zips:
 - `Yukari.zip`: normal build
 - `Yukari-debug.zip`: debug build with file logging enabled
 
-Debug logs are written to logcat with tag `Yukari`.
+Runtime logs are always emitted to logcat with tag `Yukari`. Debug builds also write file logs to:
+
+```text
+/data/adb/modules/Yukari/logs/yukari.log
+```
 
 ## Current native behavior
 
@@ -37,7 +41,7 @@ Debug logs are written to logcat with tag `Yukari`.
 - Java `ServiceManager.sCache` entries containing fixed ROM keywords are removed.
 - Binder request filtering rewrites matching service lookup names before they reach ServiceManager.
 - Binder reply filtering is attempted only when the reply buffer is already writable.
-- Optional enhanced mode can filter read-only Binder replies by swapping the reply buffer pointer to a modified userspace copy. This can hide `listServices` results, but it is unsafe because Binder buffer ownership no longer matches the pointer libbinder sees.
+- Optional `enhancedMode` can filter read-only Binder replies by swapping the reply buffer pointer to a modified userspace copy. This can hide more `listServices` results, but it is intended for geek/power users because Binder buffer ownership no longer matches the pointer libbinder sees.
 - Binder interception uses Zygisk's standard PLT hook API instead of patching libc inline.
 
 Request/reply filtering uses same-length placeholders instead of changing Parcel size.
@@ -54,7 +58,7 @@ Request/reply filtering uses same-length placeholders instead of changing Parcel
 }
 ```
 
-Set `enhancedMode` to `true` only for testing if you accept the Binder buffer ownership risk.
+Keep `enhancedMode` disabled for the normal stable path. Set it to `true` only if you understand and accept the Binder buffer ownership risk.
 
 ## Build
 
