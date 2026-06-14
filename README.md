@@ -7,6 +7,7 @@ Zygisk module that hides selected custom-ROM service signals from configured tar
 - Name: `Yukari`
 - Module ID: `Yukari`
 - Configuration: `/data/adb/modules/Yukari/config.json`
+- Runtime: standard Zygisk-compatible loader, tested target is Zygisk Next on `arm64-v8a`
 
 ## Fixed service keywords
 
@@ -28,31 +29,32 @@ CI produces two flashable module zips:
 - `Yukari.zip`: normal build
 - `Yukari-debug.zip`: debug build with file logging enabled
 
-Debug logs are written by injected target processes to:
-
-```text
-/data/adb/modules/Yukari/logs/yukari.log
-```
+Debug logs are written to logcat with tag `Yukari`.
 
 ## Current native behavior
 
 - Zygisk app specialization matches configured target packages.
 - Java `ServiceManager.sCache` entries containing fixed ROM keywords are removed.
 - Binder request filtering rewrites matching service lookup names before they reach ServiceManager.
-- Binder reply filtering rewrites matching `listServices` / service-manager reply names before the target app reads them.
+- Binder reply filtering is attempted only when the reply buffer is already writable.
+- Optional enhanced mode can filter read-only Binder replies by swapping the reply buffer pointer to a modified userspace copy. This can hide `listServices` results, but it is unsafe because Binder buffer ownership no longer matches the pointer libbinder sees.
+- Binder interception uses Zygisk's standard PLT hook API instead of patching libc inline.
 
-Reply filtering uses same-length placeholders instead of changing Parcel size. This removes Duck-style keyword hits while preserving Binder parcel layout.
+Request/reply filtering uses same-length placeholders instead of changing Parcel size.
 
 ## Configuration
 
 ```json
 {
   "enabled": true,
+  "enhancedMode": false,
   "targets": [
     "com.example.app"
   ]
 }
 ```
+
+Set `enhancedMode` to `true` only for testing if you accept the Binder buffer ownership risk.
 
 ## Build
 
