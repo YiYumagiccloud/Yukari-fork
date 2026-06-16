@@ -13,6 +13,10 @@ constexpr const char *kKeywords[] = {
     "protonaosp",
 };
 
+constexpr const char *kExactServices[] = {
+    "profile",
+};
+
 std::string to_lower_ascii(const std::string &input) {
     std::string out;
     out.reserve(input.size());
@@ -25,6 +29,11 @@ std::string to_lower_ascii(const std::string &input) {
 
 bool should_hide_service(const std::string &service_name) {
     const std::string lower = to_lower_ascii(service_name);
+
+    for (const char *service : kExactServices) {
+        if (lower == service) return true;
+    }
+
     for (const char *keyword : kKeywords) {
         if (lower.find(keyword) != std::string::npos) return true;
     }
