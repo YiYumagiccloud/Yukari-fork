@@ -47,7 +47,6 @@ Keep `enhancedMode` disabled for the normal stable path. Set it to `true` only i
 ### Build
 
 ```bash
-gradle :module:assembleRelease :module:assembleDebug
-bash scripts/package.sh release
-bash scripts/package.sh debug
+gradle :module:assembleRelease
+bash scripts/package.sh
 ```

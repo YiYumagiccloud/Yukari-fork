@@ -34,39 +34,30 @@ jobs:
           echo "Version: 1.0.0 (${RUN_NUMBER}-${SHORT_SHA})"
           cat module/module.prop
 
-      - name: Build release and debug native libraries
-        run: gradle :module:assembleRelease :module:assembleDebug
+      - name: Build native library
+        run: gradle :module:assembleRelease
 
-      - name: Package normal Magisk module
-        run: bash scripts/package.sh release
+      - name: Package Magisk module
+        run: bash scripts/package.sh
 
-      - name: Package debug Magisk module
-        run: bash scripts/package.sh debug
-
-      - name: Verify module packages
+      - name: Verify module package
         run: |
           test -f out/Yukari.zip
-          test -f out/Yukari-debug.zip
           unzip -l out/Yukari.zip
-          unzip -l out/Yukari-debug.zip
           unzip -l out/Yukari.zip | grep -q 'module.prop'
           unzip -l out/Yukari.zip | grep -q 'zygisk/arm64-v8a.so'
           unzip -l out/Yukari.zip | grep -q 'action.sh'
           unzip -l out/Yukari.zip | grep -q 'customize.sh'
-          unzip -l out/Yukari-debug.zip | grep -q 'module.prop'
-          unzip -l out/Yukari-debug.zip | grep -q 'zygisk/arm64-v8a.so'
           unzip -p out/Yukari.zip module.prop | grep -q 'version='
           unzip -p out/Yukari.zip zygisk/arm64-v8a.so > /tmp/yukari.so
           readelf -Ws /tmp/yukari.so | grep -q 'zygisk_module_entry'
           ! readelf -Ws /tmp/yukari.so | grep -q 'zygisk_module_create'
 
-      - name: Upload Yukari modules
+      - name: Upload Yukari module
         uses: actions/upload-artifact@v4
         with:
           name: Yukari-${{ github.sha }}
-          path: |
-            out/Yukari.zip
-            out/Yukari-debug.zip
+          path: out/Yukari.zip
           if-no-files-found: error
           retention-days: 30
 

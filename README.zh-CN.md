@@ -47,7 +47,6 @@ Zygisk 模块，用于隐藏指定目标应用的自定义 ROM 服务信号。
 ### 构建
 
 ```bash
-gradle :module:assembleRelease :module:assembleDebug
-bash scripts/package.sh release
-bash scripts/package.sh debug
+gradle :module:assembleRelease
+bash scripts/package.sh
 ```

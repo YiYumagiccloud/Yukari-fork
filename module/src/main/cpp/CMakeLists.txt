@@ -11,7 +11,6 @@ add_library(yukari SHARED
 )
 
 target_include_directories(yukari PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_compile_definitions(yukari PRIVATE $<$<CONFIG:Debug>:YUKARI_DEBUG_LOG=1>)
 
 target_link_libraries(yukari
     log

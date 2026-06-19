@@ -1,40 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VARIANT="${1:-release}"
-case "$VARIANT" in
-  release|normal) VARIANT="release" ;;
-  debug) VARIANT="debug" ;;
-  *) echo "usage: $0 [release|debug]" >&2; exit 2 ;;
-esac
-
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OUT_DIR="$ROOT_DIR/out"
-ZIP_NAME="Yukari.zip"
-STAGE_NAME="Yukari"
-BUILD_VARIANT="Release"
-STRIP_TASK="stripReleaseDebugSymbols"
-
-if [ "$VARIANT" = "debug" ]; then
-  ZIP_NAME="Yukari-debug.zip"
-  STAGE_NAME="Yukari-debug"
-  BUILD_VARIANT="Debug"
-  STRIP_TASK="stripDebugDebugSymbols"
-fi
-
-ZIP_PATH="$OUT_DIR/$ZIP_NAME"
-STAGE="$OUT_DIR/$STAGE_NAME"
+ZIP_PATH="$OUT_DIR/Yukari.zip"
+STAGE="$OUT_DIR/Yukari"
 
 find_native_library() {
-  local variant_lower="$1"
-  local variant_cmake="$2"
-  local strip_task="$3"
   local candidates=(
-    "$ROOT_DIR/module/build/intermediates/stripped_native_libs/$variant_lower/$strip_task/out/lib/arm64-v8a/libyukari.so"
-    "$ROOT_DIR/module/build/intermediates/stripped_native_libs/$variant_lower/$strip_task/out/lib/arm64-v8a/yukari.so"
-    "$ROOT_DIR/module/build/intermediates/merged_native_libs/$variant_lower/merge${variant_cmake}NativeLibs/out/lib/arm64-v8a/libyukari.so"
-    "$ROOT_DIR/module/build/intermediates/cxx/$variant_cmake"/*/obj/arm64-v8a/libyukari.so
-    "$ROOT_DIR/module/build/intermediates/cxx/$variant_cmake"/*/obj/arm64-v8a/yukari.so
+    "$ROOT_DIR/module/build/intermediates/stripped_native_libs/release/stripReleaseDebugSymbols/out/lib/arm64-v8a/libyukari.so"
+    "$ROOT_DIR/module/build/intermediates/stripped_native_libs/release/stripReleaseDebugSymbols/out/lib/arm64-v8a/yukari.so"
+    "$ROOT_DIR/module/build/intermediates/merged_native_libs/release/mergeReleaseNativeLibs/out/lib/arm64-v8a/libyukari.so"
+    "$ROOT_DIR/module/build/intermediates/cxx/Release"/*/obj/arm64-v8a/libyukari.so
+    "$ROOT_DIR/module/build/intermediates/cxx/Release"/*/obj/arm64-v8a/yukari.so
   )
 
   local candidate
@@ -57,14 +35,9 @@ cp "$ROOT_DIR/module/action.sh" "$STAGE/action.sh"
 cp "$ROOT_DIR/module/customize.sh" "$STAGE/customize.sh"
 chmod 0755 "$STAGE/post-fs-data.sh" "$STAGE/service.sh" "$STAGE/action.sh" "$STAGE/customize.sh"
 
-if [ "$VARIANT" = "debug" ]; then
-  sed -i 's/^version=.*/version=1.0.0-debug/' "$STAGE/module.prop"
-  sed -i 's/^description=.*/description=Debug build of Yukari with module-directory runtime logging enabled./' "$STAGE/module.prop"
-fi
-
-NATIVE_LIBRARY="$(find_native_library "$VARIANT" "$BUILD_VARIANT" "$STRIP_TASK" || true)"
+NATIVE_LIBRARY="$(find_native_library || true)"
 if [ -z "$NATIVE_LIBRARY" ]; then
-  echo "error: arm64-v8a libyukari.so was not produced for $VARIANT" >&2
+  echo "error: arm64-v8a libyukari.so was not produced" >&2
   find "$ROOT_DIR/module/build" -type f \( -name 'libyukari.so' -o -name 'yukari.so' \) -print >&2 || true
   exit 1
 fi
