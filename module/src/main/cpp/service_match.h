@@ -2,4 +2,4 @@
 
 #include <string>
 
-bool should_hide_service(const std::string &service_name);
+bool hide_service(const std::string &service_name);

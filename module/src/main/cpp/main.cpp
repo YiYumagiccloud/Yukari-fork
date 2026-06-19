@@ -12,7 +12,7 @@ YukariConfig g_config;
 std::string g_package_name;
 bool g_enabled_for_process = false;
 
-std::string jstring_to_string(JNIEnv *env, jstring value) {
+std::string jstr_to_str(JNIEnv *env, jstring value) {
     if (!env || !value) return {};
     const char *raw = env->GetStringUTFChars(value, nullptr);
     if (!raw) return {};
@@ -35,22 +35,22 @@ public:
         g_package_name.clear();
         if (!args) return;
 
-        g_package_name = jstring_to_string(env_, args->nice_name);
-        if (!is_target_package(g_config, g_package_name)) {
+        g_package_name = jstr_to_str(env_, args->nice_name);
+        if (!is_target(g_config, g_package_name)) {
             if (api_) api_->setOption(zygisk::Option::DLCLOSE_MODULE_LIBRARY);
             return;
         }
 
         g_enabled_for_process = true;
         if (api_) api_->setOption(zygisk::Option::FORCE_DENYLIST_UNMOUNT);
-        yukari_log_info("matched target %s enhanced=%d", g_package_name.c_str(), g_config.enhanced_mode ? 1 : 0);
+        log_info("matched target %s enhanced=%d", g_package_name.c_str(), g_config.enhanced_mode ? 1 : 0);
     }
 
     void postAppSpecialize(const zygisk::AppSpecializeArgs *) override {
         if (!g_enabled_for_process) return;
-        clear_service_manager_cache(env_);
-        install_binder_hooks(api_, g_config.enhanced_mode);
-        yukari_log_info("enabled for %s", g_package_name.c_str());
+        clear_cache(env_);
+        install_hooks(api_, g_config.enhanced_mode);
+        log_info("enabled for %s", g_package_name.c_str());
     }
 
 private:

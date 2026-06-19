@@ -17,7 +17,7 @@ constexpr const char *kExactServices[] = {
     "profile",
 };
 
-std::string to_lower_ascii(const std::string &input) {
+std::string to_lower(const std::string &input) {
     std::string out;
     out.reserve(input.size());
     for (unsigned char c : input) {
@@ -27,8 +27,8 @@ std::string to_lower_ascii(const std::string &input) {
 }
 } // namespace
 
-bool should_hide_service(const std::string &service_name) {
-    const std::string lower = to_lower_ascii(service_name);
+bool hide_service(const std::string &service_name) {
+    const std::string lower = to_lower(service_name);
 
     for (const char *service : kExactServices) {
         if (lower == service) return true;

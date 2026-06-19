@@ -3,7 +3,7 @@
 
 #include <string>
 
-void clear_service_manager_cache(JNIEnv *env) {
+void clear_cache(JNIEnv *env) {
     if (!env) return;
 
     jclass sm_class = env->FindClass("android/os/ServiceManager");
@@ -38,7 +38,7 @@ void clear_service_manager_cache(JNIEnv *env) {
         if (!key) continue;
         const char *raw = env->GetStringUTFChars(key, nullptr);
         if (raw) {
-            if (should_hide_service(std::string(raw))) {
+            if (hide_service(std::string(raw))) {
                 env->CallObjectMethod(cache, remove, key);
             }
             env->ReleaseStringUTFChars(key, raw);

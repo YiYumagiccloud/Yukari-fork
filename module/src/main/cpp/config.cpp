@@ -26,7 +26,7 @@ void skip_ws(const std::string &text, size_t &pos) {
     while (pos < text.size() && std::isspace(static_cast<unsigned char>(text[pos]))) ++pos;
 }
 
-bool parse_json_string(const std::string &text, size_t &pos, std::string &out) {
+bool parse_string(const std::string &text, size_t &pos, std::string &out) {
     skip_ws(text, pos);
     if (pos >= text.size() || text[pos] != '"') return false;
     ++pos;
@@ -68,7 +68,7 @@ bool parse_json_string(const std::string &text, size_t &pos, std::string &out) {
     return false;
 }
 
-bool find_value_start(const std::string &text, const char *key, size_t &pos) {
+bool find_value(const std::string &text, const char *key, size_t &pos) {
     std::string quoted_key = std::string("\"") + key + "\"";
     const auto key_pos = text.find(quoted_key);
     if (key_pos == std::string::npos) return false;
@@ -80,9 +80,9 @@ bool find_value_start(const std::string &text, const char *key, size_t &pos) {
     return pos < text.size();
 }
 
-bool parse_bool_field(const std::string &text, const char *key, bool &value) {
+bool parse_bool(const std::string &text, const char *key, bool &value) {
     size_t pos = 0;
-    if (!find_value_start(text, key, pos)) return false;
+    if (!find_value(text, key, pos)) return false;
     if (text.compare(pos, 4, "true") == 0) {
         value = true;
         return true;
@@ -97,7 +97,7 @@ bool parse_bool_field(const std::string &text, const char *key, bool &value) {
 std::vector<std::string> parse_targets(const std::string &text) {
     std::vector<std::string> targets;
     size_t pos = 0;
-    if (!find_value_start(text, "targets", pos)) return targets;
+    if (!find_value(text, "targets", pos)) return targets;
     if (text[pos] != '[') return targets;
     ++pos;
 
@@ -107,7 +107,7 @@ std::vector<std::string> parse_targets(const std::string &text) {
         if (text[pos] == ']') break;
 
         std::string value;
-        if (!parse_json_string(text, pos, value)) break;
+        if (!parse_string(text, pos, value)) break;
         if (!value.empty()) targets.push_back(value);
 
         skip_ws(text, pos);
@@ -132,13 +132,13 @@ bool load_config(YukariConfig &out) {
     out = {};
     out.enabled = true;
     out.enhanced_mode = false;
-    parse_bool_field(text, "enabled", out.enabled);
-    parse_bool_field(text, "enhancedMode", out.enhanced_mode);
+    parse_bool(text, "enabled", out.enabled);
+    parse_bool(text, "enhancedMode", out.enhanced_mode);
     out.targets = parse_targets(text);
     return true;
 }
 
-bool is_target_package(const YukariConfig &config, const std::string &package_name) {
+bool is_target(const YukariConfig &config, const std::string &package_name) {
     if (!config.enabled || package_name.empty()) return false;
     static const std::vector<std::string> protected_packages = {
         "android",

@@ -2,4 +2,4 @@
 
 #include <jni.h>
 
-void clear_service_manager_cache(JNIEnv *env);
+void clear_cache(JNIEnv *env);
