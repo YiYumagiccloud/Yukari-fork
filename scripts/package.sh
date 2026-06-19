@@ -53,10 +53,12 @@ cp "$ROOT_DIR/module/module.prop" "$STAGE/module.prop"
 cp "$ROOT_DIR/module/config.json" "$STAGE/config.json"
 cp "$ROOT_DIR/module/post-fs-data.sh" "$STAGE/post-fs-data.sh"
 cp "$ROOT_DIR/module/service.sh" "$STAGE/service.sh"
-chmod 0755 "$STAGE/post-fs-data.sh" "$STAGE/service.sh"
+cp "$ROOT_DIR/module/action.sh" "$STAGE/action.sh"
+cp "$ROOT_DIR/module/customize.sh" "$STAGE/customize.sh"
+chmod 0755 "$STAGE/post-fs-data.sh" "$STAGE/service.sh" "$STAGE/action.sh" "$STAGE/customize.sh"
 
 if [ "$VARIANT" = "debug" ]; then
-  sed -i 's/^version=.*/version=0.1.0-debug/' "$STAGE/module.prop"
+  sed -i 's/^version=.*/version=1.0.0-debug/' "$STAGE/module.prop"
   sed -i 's/^description=.*/description=Debug build of Yukari with module-directory runtime logging enabled./' "$STAGE/module.prop"
 fi
 
@@ -77,4 +79,6 @@ cp "$NATIVE_LIBRARY" "$STAGE/zygisk/arm64-v8a.so"
 test -s "$ZIP_PATH"
 unzip -l "$ZIP_PATH" | grep -q 'module.prop'
 unzip -l "$ZIP_PATH" | grep -q 'zygisk/arm64-v8a.so'
+unzip -l "$ZIP_PATH" | grep -q 'action.sh'
+unzip -l "$ZIP_PATH" | grep -q 'customize.sh'
 echo "Packaged $ZIP_PATH from $NATIVE_LIBRARY"

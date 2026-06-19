@@ -25,6 +25,15 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      - name: Inject version info
+        run: |
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          RUN_NUMBER="${{ github.run_number }}"
+          sed -i "s/^version=.*/version=1.0.0 (${RUN_NUMBER}-${SHORT_SHA})/" module/module.prop
+          sed -i "s/^versionCode=.*/versionCode=${RUN_NUMBER}/" module/module.prop
+          echo "Version: 1.0.0 (${RUN_NUMBER}-${SHORT_SHA})"
+          cat module/module.prop
+
       - name: Build release and debug native libraries
         run: gradle :module:assembleRelease :module:assembleDebug
 
@@ -42,8 +51,11 @@ jobs:
           unzip -l out/Yukari-debug.zip
           unzip -l out/Yukari.zip | grep -q 'module.prop'
           unzip -l out/Yukari.zip | grep -q 'zygisk/arm64-v8a.so'
+          unzip -l out/Yukari.zip | grep -q 'action.sh'
+          unzip -l out/Yukari.zip | grep -q 'customize.sh'
           unzip -l out/Yukari-debug.zip | grep -q 'module.prop'
           unzip -l out/Yukari-debug.zip | grep -q 'zygisk/arm64-v8a.so'
+          unzip -p out/Yukari.zip module.prop | grep -q 'version='
           unzip -p out/Yukari.zip zygisk/arm64-v8a.so > /tmp/yukari.so
           readelf -Ws /tmp/yukari.so | grep -q 'zygisk_module_entry'
           ! readelf -Ws /tmp/yukari.so | grep -q 'zygisk_module_create'
