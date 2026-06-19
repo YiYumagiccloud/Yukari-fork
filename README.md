@@ -1,15 +1,12 @@
 # Yukari
 
+[English](README.md) | [中文](README.zh-CN.md)
+
+---
+
 Zygisk module that hides selected custom-ROM service signals from configured target applications.
 
-## Module identity
-
-- Name: `Yukari`
-- Module ID: `Yukari`
-- Configuration: `/data/adb/modules/Yukari/config.json`
-- Runtime: standard Zygisk-compatible loader, tested target is Zygisk Next on `arm64-v8a`
-
-## Fixed service keywords
+### Fixed service keywords
 
 Matching is ASCII case-insensitive and built into the module:
 
@@ -22,20 +19,7 @@ Matching is ASCII case-insensitive and built into the module:
 
 Users configure target applications only. The module does not stop or unregister services globally; filtering is scoped to selected application processes.
 
-## Artifacts
-
-CI produces two flashable module zips:
-
-- `Yukari.zip`: normal build
-- `Yukari-debug.zip`: debug build with file logging enabled
-
-Runtime logs are always emitted to logcat with tag `Yukari`. Debug builds also write file logs to:
-
-```text
-/data/adb/modules/Yukari/logs/yukari.log
-```
-
-## Current native behavior
+### Current native behavior
 
 - Zygisk app specialization matches configured target packages.
 - Java `ServiceManager.sCache` entries containing fixed ROM keywords are removed.
@@ -46,7 +30,7 @@ Runtime logs are always emitted to logcat with tag `Yukari`. Debug builds also w
 
 Request/reply filtering uses same-length placeholders instead of changing Parcel size.
 
-## Configuration
+### Configuration
 
 ```json
 {
@@ -60,7 +44,7 @@ Request/reply filtering uses same-length placeholders instead of changing Parcel
 
 Keep `enhancedMode` disabled for the normal stable path. Set it to `true` only if you understand and accept the Binder buffer ownership risk.
 
-## Build
+### Build
 
 ```bash
 gradle :module:assembleRelease :module:assembleDebug
