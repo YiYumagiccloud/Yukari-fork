@@ -2,7 +2,7 @@ name: Build Yukari Module
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
   workflow_dispatch:
 
@@ -29,9 +29,15 @@ jobs:
         run: |
           SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
           RUN_NUMBER="${{ github.run_number }}"
-          sed -i "s/^version=.*/version=1.0.0 (${RUN_NUMBER}-${SHORT_SHA})/" module/module.prop
+          BRANCH_NAME=${GITHUB_REF#refs/heads/}
+          if [ "$BRANCH_NAME" = "dev" ]; then
+            sed -i "s/^version=.*/version=1.0.0-dev (${RUN_NUMBER}-${SHORT_SHA})/" module/module.prop
+          else
+            sed -i "s/^version=.*/version=1.0.0 (${RUN_NUMBER}-${SHORT_SHA})/" module/module.prop
+          fi
           sed -i "s/^versionCode=.*/versionCode=${RUN_NUMBER}/" module/module.prop
-          echo "Version: 1.0.0 (${RUN_NUMBER}-${SHORT_SHA})"
+          echo "Branch: $BRANCH_NAME"
+          echo "Version: $(grep '^version=' module/module.prop)"
           cat module/module.prop
 
       - name: Build native library
