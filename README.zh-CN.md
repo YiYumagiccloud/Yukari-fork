@@ -25,7 +25,8 @@ Zygisk 模块，用于隐藏指定目标应用的自定义 ROM 服务信号。
 - 移除 Java `ServiceManager.sCache` 中包含固定 ROM 关键词的条目。
 - Binder 请求过滤：在请求到达 ServiceManager 之前，重写匹配的服务查询名。
 - Binder 回复过滤：仅在回复缓冲区可写时尝试过滤。
-- 可选 `enhancedMode`：通过将回复缓冲区指针替换为修改后的用户态副本，可过滤只读 Binder 回复。这能隐藏更多 `listServices` 结果，但仅限极客/高级用户使用，因为 Binder 缓冲区所有权不再与 libbinder 看到的指针匹配。
+- 可选 `enhancedMode`：通过将回复缓冲区指针替换为修改后的用户态副本，可过滤只读 Binder 回复。
+  > **⚠️ 实验性警告：** 此功能为高危实验性功能。开启后可能导致应用严重崩溃 (SIGSEGV)，因为它破坏了 Binder 缓冲区的生命周期。日常使用请务必保持关闭。
 - Binder 拦截使用 Zygisk 的标准 PLT hook API，而非内联修补 libc。
 
 请求/回复过滤使用等长占位符替换，不改变 Parcel 大小。
@@ -42,7 +43,7 @@ Zygisk 模块，用于隐藏指定目标应用的自定义 ROM 服务信号。
 }
 ```
 
-正常稳定使用请保持 `enhancedMode` 关闭。仅在你理解并接受 Binder 缓冲区所有权风险时才设为 `true`。
+正常稳定使用请保持 `enhancedMode` 关闭。仅在你完全理解 Binder 生命周期风险时才设为 `true` 用于测试。
 
 ### 构建
 
