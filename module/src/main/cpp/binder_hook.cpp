@@ -21,21 +21,31 @@
 #define TF_ONE_WAY 0x01
 #endif
 
+#ifndef BC_FREE_BUFFER
+#define BC_FREE_BUFFER _IOW('c', 3, binder_uintptr_t)
+#endif
+
 // Service Manager Transaction Codes
 #define SVC_GET_SERVICE 1
 #define SVC_CHECK_SERVICE 2
 #define SVC_LIST_SERVICES 4
 
+// Max reply buffer size for swap (256KB, enough for listServices/getServiceDebugInfo)
+#define MAX_REPLY_BUF (256 * 1024)
+
 namespace {
 using IoctlFn = int (*)(int, unsigned long, void *);
 IoctlFn g_original_ioctl = nullptr;
 bool g_hook_installed = false;
-bool g_enhanced_mode = false;
 
 // Thread local: whether the current thread has a pending synchronous
-// transaction to handle 0 (servicemanager). If so, the next BR_REPLY
-// will be scanned for service-name strings.
+// transaction to handle 0 (servicemanager).
 thread_local bool g_pending_sm_reply = false;
+
+// POD swap buffer — no destructor, safe for thread_local on bionic.
+// Only one swap per thread at a time (binder is synchronous per thread).
+alignas(16) thread_local unsigned char g_swap_buf[MAX_REPLY_BUF];
+thread_local void *g_active_swap_ptr = nullptr; // non-null if swap_buf is in use
 
 struct binder_transaction_data_sg_local {
     binder_transaction_data transaction_data;
@@ -48,6 +58,7 @@ struct ElfMappingId {
 };
 
 size_t align4(size_t value) { return (value + 3u) & ~static_cast<size_t>(3u); }
+size_t align8(size_t value) { return (value + 7u) & ~static_cast<size_t>(7u); }
 
 std::string to_ascii(const char16_t *chars, int32_t len) {
     std::string ascii;
@@ -84,8 +95,6 @@ void overwrite_utf16(char16_t *chars, int32_t len) {
     for (int32_t i = 0; i < len; ++i) chars[i] = u'_';
 }
 
-// Reads a parcel string16 at a given offset, checks for keyword, and overwrites if matched.
-// Returns bytes consumed (including padding) if string exists, 0 otherwise.
 size_t process_string16(uint8_t *parcel, size_t size, size_t off, bool &hit) {
     if (off + sizeof(int32_t) > size) return 0;
     int32_t len = 0;
@@ -107,26 +116,16 @@ size_t process_string16(uint8_t *parcel, size_t size, size_t off, bool &hit) {
     return next_off - off;
 }
 
-// Safely scan a ServiceManager reply buffer for String16 values containing
-// ROM keywords. This works for listServices (String[]), getServiceDebugInfo
-// (ServiceDebugInfo[] which contains String16 name), and any other SM reply
-// that embeds service names as String16.
-//
-// The is_parcel_str16 validator is extremely strict (alignment, length,
-// null-terminator, printable-ASCII-only), so false positives on binary
-// data are virtually impossible.
+// Scan a ServiceManager reply buffer for String16 values containing
+// ROM keywords. Covers listServices, getServiceDebugInfo, etc.
 void scan_sm_reply_for_strings(uint8_t *parcel, size_t size) {
     if (!parcel || size < sizeof(int32_t)) return;
     int total_hits = 0;
 
-    // Walk the buffer 4 bytes at a time, looking for valid String16 structures.
     for (size_t off = 0; off + sizeof(int32_t) <= size; off += sizeof(uint32_t)) {
         bool hit = false;
-        size_t consumed = process_string16(parcel, size, off, hit);
+        process_string16(parcel, size, off, hit);
         if (hit) ++total_hits;
-        // consumed > 0 means we found a valid String16 (hit or not).
-        // We can optionally skip past it, but scanning every 4 bytes is
-        // safer and the overhead is negligible for typical SM replies.
     }
 
     if (total_hits > 0) {
@@ -136,38 +135,63 @@ void scan_sm_reply_for_strings(uint8_t *parcel, size_t size) {
 
 void process_transaction(const binder_transaction_data &txn) {
     if (txn.data_size == 0 || txn.data.ptr.buffer == 0) return;
-    if (txn.target.handle != 0) return; // Only ServiceManager
-    if (txn.flags & TF_ONE_WAY) return;  // Only synchronous transactions get replies
+    if (txn.target.handle != 0) return;
+    if (txn.flags & TF_ONE_WAY) return;
 
     g_pending_sm_reply = true;
 
-    // For GET_SERVICE / CHECK_SERVICE, filter the service name in the request.
     uint32_t code = txn.code;
     if (code == SVC_GET_SERVICE || code == SVC_CHECK_SERVICE) {
         auto *parcel = reinterpret_cast<uint8_t *>(txn.data.ptr.buffer);
-        // Parcel format: [strict_mode(4)] [work_source(4)] [header(4)] [interface_token] [service_name]
-        size_t pos = 12; // Skip the 3 int32_t header
+        size_t pos = 12; // Skip strict_mode + work_source + header
         bool hit = false;
-        // Skip interface token
         size_t consumed = process_string16(parcel, static_cast<size_t>(txn.data_size), pos, hit);
         if (consumed > 0) {
             pos += consumed;
-            // Next string is the service name
             process_string16(parcel, static_cast<size_t>(txn.data_size), pos, hit);
         }
     }
-    // For all other SM transactions (listServices, getServiceDebugInfo, etc.),
-    // we don't filter the request, but we will scan the reply.
 }
 
-// Helper to make a read-only binder buffer writable temporarily
-bool make_writable(void *addr, size_t len) {
-    const long page_size = sysconf(_SC_PAGESIZE);
-    if (page_size <= 0) return false;
-    const uintptr_t page_mask = ~static_cast<uintptr_t>(page_size - 1);
-    uintptr_t start = reinterpret_cast<uintptr_t>(addr) & page_mask;
-    uintptr_t end = (reinterpret_cast<uintptr_t>(addr) + len + page_size - 1) & page_mask;
-    return mprotect(reinterpret_cast<void *>(start), end - start, PROT_READ | PROT_WRITE) == 0;
+// Copy reply to swap buffer, filter it, and replace the pointer.
+// The app will later send BC_FREE_BUFFER with our swap buffer address,
+// which we intercept in process_write to prevent kernel from freeing it.
+bool swap_reply_buffer(binder_transaction_data *txn) {
+    if (!txn || txn->data_size == 0 || txn->data.ptr.buffer == 0) return false;
+
+    const size_t data_size = static_cast<size_t>(txn->data_size);
+    const size_t offsets_size = static_cast<size_t>(txn->offsets_size);
+    const size_t offsets_off = align8(data_size);
+    const size_t copy_size = offsets_off + offsets_size;
+
+    if (copy_size > MAX_REPLY_BUF) {
+        log_info("swap: reply too large (%zu), skip", copy_size);
+        return false;
+    }
+    if (g_active_swap_ptr != nullptr) {
+        // Previous swap not yet freed by app — this shouldn't happen for
+        // synchronous binder on the same thread, but guard anyway.
+        log_info("swap: buffer still in use, skip");
+        return false;
+    }
+
+    std::memcpy(g_swap_buf, reinterpret_cast<const void *>(txn->data.ptr.buffer), data_size);
+    if (offsets_size > 0 && txn->data.ptr.offsets != 0) {
+        std::memcpy(g_swap_buf + offsets_off, reinterpret_cast<const void *>(txn->data.ptr.offsets), offsets_size);
+    }
+
+    // Filter the copy
+    scan_sm_reply_for_strings(g_swap_buf, data_size);
+
+    // Replace pointers to point to our buffer
+    txn->data.ptr.buffer = reinterpret_cast<binder_uintptr_t>(g_swap_buf);
+    if (offsets_size > 0 && txn->data.ptr.offsets != 0) {
+        txn->data.ptr.offsets = reinterpret_cast<binder_uintptr_t>(g_swap_buf + offsets_off);
+    }
+
+    g_active_swap_ptr = g_swap_buf;
+    log_info("swap: replaced reply buffer with POD swap (%zu bytes)", copy_size);
+    return true;
 }
 
 void process_reply(binder_transaction_data *txn) {
@@ -176,16 +200,10 @@ void process_reply(binder_transaction_data *txn) {
 
     if (!txn || txn->data_size == 0 || txn->data.ptr.buffer == 0) return;
 
-    auto *parcel = reinterpret_cast<uint8_t *>(txn->data.ptr.buffer);
-    const size_t data_size = static_cast<size_t>(txn->data_size);
-
-    // Use mprotect to ensure the buffer is writable (binder mmap may be read-only)
-    make_writable(parcel, data_size);
-
-    // Scan the reply for any String16 containing ROM keywords.
-    // This covers listServices, getServiceDebugInfo, and any other
-    // ServiceManager reply that embeds service names.
-    scan_sm_reply_for_strings(parcel, data_size);
+    // Binder mmap buffers are read-only on Android 16.
+    // mprotect doesn't work on device mappings.
+    // Must copy to our own buffer, filter, and swap the pointer.
+    swap_reply_buffer(txn);
 }
 
 void process_write(binder_write_read *bwr) {
@@ -208,6 +226,17 @@ void process_write(binder_write_read *bwr) {
             auto *txn = reinterpret_cast<binder_transaction_data_sg_local *>(ptr);
             process_transaction(txn->transaction_data);
             ptr += sizeof(binder_transaction_data_sg_local);
+        } else if (cmd == BC_FREE_BUFFER) {
+            if (ptr + sizeof(binder_uintptr_t) > end) return;
+            binder_uintptr_t *buf_ptr = reinterpret_cast<binder_uintptr_t *>(ptr);
+            // Check if app is trying to free our swap buffer
+            if (g_active_swap_ptr != nullptr &&
+                *buf_ptr == reinterpret_cast<binder_uintptr_t>(g_active_swap_ptr)) {
+                g_active_swap_ptr = nullptr; // Release our buffer
+                *buf_ptr = 0; // Tell kernel to ignore this free
+                log_info("swap: intercepted BC_FREE_BUFFER for swap buffer");
+            }
+            ptr += sizeof(binder_uintptr_t);
         } else {
             return;
         }
@@ -254,6 +283,9 @@ void process_read(binder_write_read *bwr) {
                 return;
         }
     }
+    // IMPORTANT: Do NOT release g_active_swap_ptr here!
+    // The app reads the buffer AFTER ioctl returns. It will send
+    // BC_FREE_BUFFER in a future process_write call to release it.
 }
 
 int hook_ioctl(int fd, unsigned long request, void *arg) {
@@ -308,7 +340,8 @@ void install_hooks(zygisk::Api *api, bool enhanced_mode) {
         return;
     }
 
-    g_enhanced_mode = enhanced_mode;
+    // enhanced_mode is no longer used — swap is always on for SM replies
+    (void)enhanced_mode;
     const auto mappings = find_mappings();
     if (mappings.empty()) {
         log_error("libbinder mapping not found; cannot install ioctl hook");
@@ -325,6 +358,5 @@ void install_hooks(zygisk::Api *api, bool enhanced_mode) {
     }
 
     g_hook_installed = true;
-    log_info("zygisk plt ioctl hook installed for %zu libbinder mapping(s), enhanced=%d", mappings.size(),
-                    g_enhanced_mode ? 1 : 0);
+    log_info("zygisk plt ioctl hook installed for %zu libbinder mapping(s)", mappings.size());
 }
