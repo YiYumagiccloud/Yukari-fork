@@ -26,7 +26,7 @@
 #define SVC_CHECK_SERVICE 2
 #define SVC_LIST_SERVICES 4
 
-// Max reply buffer size for enhanced mode swap (256KB, enough for listServices)
+// Max reply buffer size for enhanced mode swap (256KB)
 #define MAX_REPLY_BUF (256 * 1024)
 
 namespace {
@@ -35,14 +35,11 @@ IoctlFn g_original_ioctl = nullptr;
 bool g_hook_installed = false;
 bool g_enhanced_mode = false;
 
-// Thread local state — only POD types to avoid destructor issues on thread exit
+// Thread local state
 thread_local int g_pending_sm_list_replies = 0;
 
-// Enhanced mode: use raw POD buffer instead of std::deque to avoid
-// thread_local non-trivial destructor crashes on bionic.
+// Enhanced mode POD buffer
 thread_local bool g_enhanced_buf_in_use = false;
-thread_local size_t g_enhanced_buf_size = 0;
-// Aligned raw storage — no constructor/destructor needed
 alignas(16) thread_local unsigned char g_enhanced_buf[MAX_REPLY_BUF];
 
 struct binder_transaction_data_sg_local {
@@ -61,21 +58,15 @@ struct MemoryRangeProt {
     int prot = 0;
 };
 
-size_t align4(size_t value) {
-    return (value + 3u) & ~static_cast<size_t>(3u);
-}
-
-size_t align8(size_t value) {
-    return (value + 7u) & ~static_cast<size_t>(7u);
-}
+size_t align4(size_t value) { return (value + 3u) & ~static_cast<size_t>(3u); }
+size_t align8(size_t value) { return (value + 7u) & ~static_cast<size_t>(7u); }
 
 std::string to_ascii(const char16_t *chars, int32_t len) {
     std::string ascii;
     if (!chars || len <= 0 || len > 512) return ascii;
     ascii.reserve(static_cast<size_t>(len));
     for (int32_t i = 0; i < len; ++i) {
-        const char16_t c = chars[i];
-        ascii.push_back(c <= 0x7f ? static_cast<char>(c) : '?');
+        ascii.push_back(chars[i] <= 0x7f ? static_cast<char>(chars[i]) : '?');
     }
     return ascii;
 }
@@ -91,7 +82,6 @@ int parse_prot(const char *perms) {
 bool collect_prots(void *addr, size_t size, std::vector<MemoryRangeProt> &ranges) {
     ranges.clear();
     if (!addr || size == 0) return false;
-
     const uintptr_t target_begin = reinterpret_cast<uintptr_t>(addr);
     const uintptr_t target_end = target_begin + size;
     FILE *fp = std::fopen("/proc/self/maps", "r");
@@ -99,8 +89,7 @@ bool collect_prots(void *addr, size_t size, std::vector<MemoryRangeProt> &ranges
 
     char line[512]{};
     while (std::fgets(line, sizeof(line), fp)) {
-        unsigned long long begin = 0;
-        unsigned long long end = 0;
+        unsigned long long begin = 0, end = 0;
         char perms[5]{};
         if (std::sscanf(line, "%llx-%llx %4s", &begin, &end, perms) != 3) continue;
         if (end <= target_begin || begin >= target_end) continue;
@@ -112,7 +101,6 @@ bool collect_prots(void *addr, size_t size, std::vector<MemoryRangeProt> &ranges
         ranges.push_back(range);
     }
     std::fclose(fp);
-
     if (ranges.empty()) return false;
     uintptr_t covered = target_begin;
     for (const auto &range : ranges) {
@@ -154,8 +142,6 @@ void overwrite_utf16(char16_t *chars, int32_t len) {
     for (int32_t i = 0; i < len; ++i) chars[i] = u'_';
 }
 
-// Reads a parcel string16 at a given offset, checks for keyword, and overwrites if matched.
-// Returns bytes consumed (including padding) if string exists, 0 otherwise.
 size_t process_string16(uint8_t *parcel, size_t size, size_t off, bool &hit) {
     if (off + sizeof(int32_t) > size) return 0;
     int32_t len = 0;
@@ -177,39 +163,35 @@ size_t process_string16(uint8_t *parcel, size_t size, size_t off, bool &hit) {
     return next_off - off;
 }
 
-// Explicitly filter listServices() reply: a String16[] array
 void filter_list_services_reply(uint8_t *parcel, size_t size) {
     if (!parcel || size < sizeof(int32_t)) return;
     size_t pos = 0;
-
-    // Skip status_t (int32_t exception code)
-    pos += sizeof(int32_t);
+    pos += sizeof(int32_t); // Skip status_t
     if (pos >= size) return;
 
-    // Read array length
     int32_t array_len = 0;
     std::memcpy(&array_len, parcel + pos, sizeof(array_len));
     pos += sizeof(int32_t);
-    if (array_len <= 0 || array_len > 1024) return; // Sanity check
+    if (array_len <= 0 || array_len > 1024) return;
 
     for (int32_t i = 0; i < array_len; ++i) {
         bool hit = false;
         size_t consumed = process_string16(parcel, size, pos, hit);
-        if (consumed == 0) break; // Parse error, abort
+        if (consumed == 0) break;
         pos += consumed;
     }
 }
 
 void process_transaction(const binder_transaction_data &txn) {
     if (txn.data_size == 0 || txn.data.ptr.buffer == 0) return;
-    if (txn.target.handle != 0) return; // Only ServiceManager
+    if (txn.target.handle != 0) return;
 
     uint32_t code = txn.code;
     if (code == SVC_GET_SERVICE || code == SVC_CHECK_SERVICE) {
         if ((txn.flags & TF_ONE_WAY) == 0) {
             auto *parcel = reinterpret_cast<uint8_t *>(txn.data.ptr.buffer);
-            // Request format: [interface_token] [service_name]
-            size_t pos = 0;
+            // Parcel format: [strict_mode(4)] [work_source(4)] [header(4)] [interface_token] [service_name]
+            size_t pos = 12; // Skip the 3 int32_t header
             bool hit = false;
             // Skip interface token
             size_t consumed = process_string16(parcel, static_cast<size_t>(txn.data_size), pos, hit);
@@ -244,8 +226,6 @@ bool swap_reply(binder_transaction_data *txn) {
     }
 
     g_enhanced_buf_in_use = true;
-    g_enhanced_buf_size = copy_size;
-
     std::memcpy(g_enhanced_buf, reinterpret_cast<const void *>(txn->data.ptr.buffer), data_size);
     if (offsets_size > 0 && txn->data.ptr.offsets != 0) {
         std::memcpy(g_enhanced_buf + offsets_off, reinterpret_cast<const void *>(txn->data.ptr.offsets), offsets_size);
@@ -310,6 +290,16 @@ void process_write(binder_write_read *bwr) {
             auto *txn = reinterpret_cast<binder_transaction_data_sg_local *>(ptr);
             process_transaction(txn->transaction_data);
             ptr += sizeof(binder_transaction_data_sg_local);
+        } else if (cmd == BC_FREE_BUFFER) {
+            if (ptr + sizeof(binder_uintptr_t) > end) return;
+            // Intercept BC_FREE_BUFFER to protect our enhanced buffer
+            binder_uintptr_t *buf_ptr = reinterpret_cast<binder_uintptr_t *>(ptr);
+            if (*buf_ptr == reinterpret_cast<binder_uintptr_t>(g_enhanced_buf)) {
+                g_enhanced_buf_in_use = false; // Release our buffer
+                *buf_ptr = 0; // Prevent kernel from trying to free it
+                log_info("enhanced mode: intercepted BC_FREE_BUFFER");
+            }
+            ptr += sizeof(binder_uintptr_t);
         } else {
             return;
         }
@@ -356,15 +346,12 @@ void process_read(binder_write_read *bwr) {
                 return;
         }
     }
-    // Release enhanced buffer after read processing is done
-    g_enhanced_buf_in_use = false;
 }
 
 int hook_ioctl(int fd, unsigned long request, void *arg) {
     if (request != BINDER_WRITE_READ || !arg) {
         return g_original_ioctl ? g_original_ioctl(fd, request, arg) : -1;
     }
-
     auto *bwr = reinterpret_cast<binder_write_read *>(arg);
     process_write(bwr);
     const int ret = g_original_ioctl ? g_original_ioctl(fd, request, arg) : -1;
@@ -386,12 +373,8 @@ std::vector<ElfMappingId> find_mappings() {
 
     char line[1024]{};
     while (std::fgets(line, sizeof(line), fp)) {
-        unsigned long long begin = 0;
-        unsigned long long end = 0;
-        unsigned long long offset = 0;
-        unsigned int major_id = 0;
-        unsigned int minor_id = 0;
-        unsigned long long inode = 0;
+        unsigned long long begin = 0, end = 0, offset = 0, inode = 0;
+        unsigned int major_id = 0, minor_id = 0;
         char perms[5]{};
         char path[512]{};
         const int fields = std::sscanf(line, "%llx-%llx %4s %llx %x:%x %llu %511s", &begin, &end,
