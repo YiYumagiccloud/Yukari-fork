@@ -5,7 +5,6 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
-#include <deque>
 #include <linux/android/binder.h>
 #include <string>
 #include <sys/ioctl.h>
@@ -27,17 +26,24 @@
 #define SVC_CHECK_SERVICE 2
 #define SVC_LIST_SERVICES 4
 
+// Max reply buffer size for enhanced mode swap (256KB, enough for listServices)
+#define MAX_REPLY_BUF (256 * 1024)
+
 namespace {
 using IoctlFn = int (*)(int, unsigned long, void *);
 IoctlFn g_original_ioctl = nullptr;
 bool g_hook_installed = false;
 bool g_enhanced_mode = false;
 
-// Thread local state to track pending ServiceManager replies
+// Thread local state — only POD types to avoid destructor issues on thread exit
 thread_local int g_pending_sm_list_replies = 0;
 
-// Only used for experimental enhanced mode
-thread_local std::deque<std::vector<uint8_t>> g_enhanced_reply_copies;
+// Enhanced mode: use raw POD buffer instead of std::deque to avoid
+// thread_local non-trivial destructor crashes on bionic.
+thread_local bool g_enhanced_buf_in_use = false;
+thread_local size_t g_enhanced_buf_size = 0;
+// Aligned raw storage — no constructor/destructor needed
+alignas(16) thread_local unsigned char g_enhanced_buf[MAX_REPLY_BUF];
 
 struct binder_transaction_data_sg_local {
     binder_transaction_data transaction_data;
@@ -168,7 +174,7 @@ size_t process_string16(uint8_t *parcel, size_t size, size_t off, bool &hit) {
         hit = true;
         log_info("scrubbed service string: %s", value.c_str());
     }
-    return next_off - off; // bytes consumed
+    return next_off - off;
 }
 
 // Explicitly filter listServices() reply: a String16[] array
@@ -228,20 +234,30 @@ bool swap_reply(binder_transaction_data *txn) {
     const size_t offsets_off = align8(data_size);
     const size_t copy_size = offsets_off + offsets_size;
 
-    g_enhanced_reply_copies.emplace_back(copy_size);
-    auto &copy = g_enhanced_reply_copies.back();
-    std::memcpy(copy.data(), reinterpret_cast<const void *>(txn->data.ptr.buffer), data_size);
-    if (offsets_size > 0 && txn->data.ptr.offsets != 0) {
-        std::memcpy(copy.data() + offsets_off, reinterpret_cast<const void *>(txn->data.ptr.offsets), offsets_size);
+    if (copy_size > MAX_REPLY_BUF) {
+        log_info("enhanced mode: reply too large (%zu), skip", copy_size);
+        return false;
+    }
+    if (g_enhanced_buf_in_use) {
+        log_info("enhanced mode: buffer already in use, skip");
+        return false;
     }
 
-    filter_list_services_reply(copy.data(), data_size);
+    g_enhanced_buf_in_use = true;
+    g_enhanced_buf_size = copy_size;
 
-    txn->data.ptr.buffer = reinterpret_cast<binder_uintptr_t>(copy.data());
+    std::memcpy(g_enhanced_buf, reinterpret_cast<const void *>(txn->data.ptr.buffer), data_size);
     if (offsets_size > 0 && txn->data.ptr.offsets != 0) {
-        txn->data.ptr.offsets = reinterpret_cast<binder_uintptr_t>(copy.data() + offsets_off);
+        std::memcpy(g_enhanced_buf + offsets_off, reinterpret_cast<const void *>(txn->data.ptr.offsets), offsets_size);
     }
-    log_info("enhanced mode swapped reply buffer after filtering listServices");
+
+    filter_list_services_reply(g_enhanced_buf, data_size);
+
+    txn->data.ptr.buffer = reinterpret_cast<binder_uintptr_t>(g_enhanced_buf);
+    if (offsets_size > 0 && txn->data.ptr.offsets != 0) {
+        txn->data.ptr.offsets = reinterpret_cast<binder_uintptr_t>(g_enhanced_buf + offsets_off);
+    }
+    log_info("enhanced mode swapped reply buffer using POD storage");
     return true;
 }
 
@@ -340,6 +356,8 @@ void process_read(binder_write_read *bwr) {
                 return;
         }
     }
+    // Release enhanced buffer after read processing is done
+    g_enhanced_buf_in_use = false;
 }
 
 int hook_ioctl(int fd, unsigned long request, void *arg) {
@@ -347,7 +365,6 @@ int hook_ioctl(int fd, unsigned long request, void *arg) {
         return g_original_ioctl ? g_original_ioctl(fd, request, arg) : -1;
     }
 
-    g_enhanced_reply_copies.clear();
     auto *bwr = reinterpret_cast<binder_write_read *>(arg);
     process_write(bwr);
     const int ret = g_original_ioctl ? g_original_ioctl(fd, request, arg) : -1;
