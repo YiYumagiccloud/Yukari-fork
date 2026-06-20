@@ -43,13 +43,13 @@ public:
 
         g_enabled_for_process = true;
         if (api_) api_->setOption(zygisk::Option::FORCE_DENYLIST_UNMOUNT);
-        log_info("matched target %s enhanced=%d", g_package_name.c_str(), g_config.enhanced_mode ? 1 : 0);
+        log_info("matched target %s", g_package_name.c_str());
     }
 
     void postAppSpecialize(const zygisk::AppSpecializeArgs *) override {
         if (!g_enabled_for_process) return;
         clear_cache(env_);
-        install_hooks(api_, g_config.enhanced_mode);
+        install_hooks(api_);
         log_info("enabled for %s", g_package_name.c_str());
     }
 

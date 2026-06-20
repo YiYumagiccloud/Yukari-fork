@@ -28,7 +28,6 @@
 // Service Manager Transaction Codes
 #define SVC_GET_SERVICE 1
 #define SVC_CHECK_SERVICE 2
-#define SVC_LIST_SERVICES 4
 
 // Max reply buffer size for swap (256KB, enough for listServices/getServiceDebugInfo)
 #define MAX_REPLY_BUF (256 * 1024)
@@ -169,8 +168,6 @@ bool swap_reply_buffer(binder_transaction_data *txn) {
         return false;
     }
     if (g_active_swap_ptr != nullptr) {
-        // Previous swap not yet freed by app — this shouldn't happen for
-        // synchronous binder on the same thread, but guard anyway.
         log_info("swap: buffer still in use, skip");
         return false;
     }
@@ -180,10 +177,8 @@ bool swap_reply_buffer(binder_transaction_data *txn) {
         std::memcpy(g_swap_buf + offsets_off, reinterpret_cast<const void *>(txn->data.ptr.offsets), offsets_size);
     }
 
-    // Filter the copy
     scan_sm_reply_for_strings(g_swap_buf, data_size);
 
-    // Replace pointers to point to our buffer
     txn->data.ptr.buffer = reinterpret_cast<binder_uintptr_t>(g_swap_buf);
     if (offsets_size > 0 && txn->data.ptr.offsets != 0) {
         txn->data.ptr.offsets = reinterpret_cast<binder_uintptr_t>(g_swap_buf + offsets_off);
@@ -200,9 +195,6 @@ void process_reply(binder_transaction_data *txn) {
 
     if (!txn || txn->data_size == 0 || txn->data.ptr.buffer == 0) return;
 
-    // Binder mmap buffers are read-only on Android 16.
-    // mprotect doesn't work on device mappings.
-    // Must copy to our own buffer, filter, and swap the pointer.
     swap_reply_buffer(txn);
 }
 
@@ -229,11 +221,10 @@ void process_write(binder_write_read *bwr) {
         } else if (cmd == BC_FREE_BUFFER) {
             if (ptr + sizeof(binder_uintptr_t) > end) return;
             binder_uintptr_t *buf_ptr = reinterpret_cast<binder_uintptr_t *>(ptr);
-            // Check if app is trying to free our swap buffer
             if (g_active_swap_ptr != nullptr &&
                 *buf_ptr == reinterpret_cast<binder_uintptr_t>(g_active_swap_ptr)) {
-                g_active_swap_ptr = nullptr; // Release our buffer
-                *buf_ptr = 0; // Tell kernel to ignore this free
+                g_active_swap_ptr = nullptr;
+                *buf_ptr = 0;
                 log_info("swap: intercepted BC_FREE_BUFFER for swap buffer");
             }
             ptr += sizeof(binder_uintptr_t);
@@ -283,9 +274,6 @@ void process_read(binder_write_read *bwr) {
                 return;
         }
     }
-    // IMPORTANT: Do NOT release g_active_swap_ptr here!
-    // The app reads the buffer AFTER ioctl returns. It will send
-    // BC_FREE_BUFFER in a future process_write call to release it.
 }
 
 int hook_ioctl(int fd, unsigned long request, void *arg) {
@@ -333,15 +321,13 @@ std::vector<ElfMappingId> find_mappings() {
 }
 } // namespace
 
-void install_hooks(zygisk::Api *api, bool enhanced_mode) {
+void install_hooks(zygisk::Api *api) {
     if (g_hook_installed) return;
     if (!api) {
         log_error("zygisk api is null; cannot install binder hook");
         return;
     }
 
-    // enhanced_mode is no longer used — swap is always on for SM replies
-    (void)enhanced_mode;
     const auto mappings = find_mappings();
     if (mappings.empty()) {
         log_error("libbinder mapping not found; cannot install ioctl hook");

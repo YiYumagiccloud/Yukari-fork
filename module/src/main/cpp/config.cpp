@@ -131,9 +131,7 @@ bool load_config(YukariConfig &out) {
 
     out = {};
     out.enabled = true;
-    out.enhanced_mode = false;
     parse_bool(text, "enabled", out.enabled);
-    parse_bool(text, "enhancedMode", out.enhanced_mode);
     out.targets = parse_targets(text);
     return true;
 }

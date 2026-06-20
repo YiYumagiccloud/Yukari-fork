@@ -24,9 +24,7 @@ Users configure target applications only. The module does not stop or unregister
 - Zygisk app specialization matches configured target packages.
 - Java `ServiceManager.sCache` entries containing fixed ROM keywords are removed.
 - Binder request filtering rewrites matching service lookup names before they reach ServiceManager.
-- Binder reply filtering is attempted only when the reply buffer is already writable.
-- Optional `enhancedMode` can filter read-only Binder replies by swapping the reply buffer pointer to a modified userspace copy. 
-  > **⚠️ Experimental Warning:** This feature is highly experimental. Enabling it may cause severe app crashes (SIGSEGV) due to Binder buffer ownership conflicts. Keep it `false` for stable daily use.
+- Binder reply filtering uses a safe buffer swap mechanism to scan and filter all ServiceManager replies (including `listServices` and `getServiceDebugInfo`). This prevents apps from enumerating hidden services.
 - Binder interception uses Zygisk's standard PLT hook API instead of patching libc inline.
 
 Request/reply filtering uses same-length placeholders instead of changing Parcel size.
@@ -36,14 +34,11 @@ Request/reply filtering uses same-length placeholders instead of changing Parcel
 ```json
 {
   "enabled": true,
-  "enhancedMode": false,
   "targets": [
     "com.example.app"
   ]
 }
 ```
-
-Keep `enhancedMode` disabled for the normal stable path. Set it to `true` only for testing if you fully understand the Binder lifecycle risks.
 
 ### Build
 

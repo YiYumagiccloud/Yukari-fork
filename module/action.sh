@@ -17,10 +17,8 @@ fi
 
 # Preserve existing settings
 ENABLED="true"
-ENHANCED="false"
 if [ -f "$CONFIG" ]; then
     grep -q '"enabled"[[:space:]]*:[[:space:]]*false' "$CONFIG" && ENABLED="false"
-    grep -q '"enhancedMode"[[:space:]]*:[[:space:]]*true' "$CONFIG" && ENHANCED="true"
 fi
 
 CURRENT_USER="$(am get-current-user 2>/dev/null)"
@@ -35,7 +33,6 @@ PACKAGE_COUNT="$(wc -l < "$PACKAGE_LIST" | tr -d ' ')"
 {
     echo "{"
     echo "  \"enabled\": $ENABLED,"
-    echo "  \"enhancedMode\": $ENHANCED,"
     echo "  \"targets\": ["
 
     INDEX=0
@@ -59,7 +56,6 @@ rm -f "$PACKAGE_LIST"
 
 echo "Yukari config updated."
 echo "  enabled: $ENABLED"
-echo "  enhancedMode: $ENHANCED"
 echo "  user: $CURRENT_USER"
 echo "  targets: $PACKAGE_COUNT app(s)"
 echo "  path: $CONFIG"
