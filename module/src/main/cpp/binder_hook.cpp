@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstring>
 #include <linux/android/binder.h>
+#include <pthread.h>
 #include <string>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
@@ -29,8 +30,8 @@
 #define SVC_GET_SERVICE 1
 #define SVC_CHECK_SERVICE 2
 
-// Max reply buffer size for swap (256KB, enough for listServices/getServiceDebugInfo)
-#define MAX_REPLY_BUF (256 * 1024)
+// Max reply buffer size for swap (32KB, enough for listServices/getServiceDebugInfo)
+#define MAX_REPLY_BUF (32 * 1024)
 
 namespace {
 using IoctlFn = int (*)(int, unsigned long, void *);
@@ -41,10 +42,40 @@ bool g_hook_installed = false;
 // transaction to handle 0 (servicemanager).
 thread_local bool g_pending_sm_reply = false;
 
-// POD swap buffer — no destructor, safe for thread_local on bionic.
-// Only one swap per thread at a time (binder is synchronous per thread).
-alignas(16) thread_local unsigned char g_swap_buf[MAX_REPLY_BUF];
-thread_local void *g_active_swap_ptr = nullptr; // non-null if swap_buf is in use
+// --- Lazy Buffer Management (Optimized Memory Usage) ---
+// Instead of allocating 256KB per thread upfront, we allocate on demand
+// and clean up automatically when the thread exits using pthread_key.
+thread_local unsigned char *g_swap_buf = nullptr; // Allocated on first use
+
+// pthread_key destructor: automatically frees the buffer when thread exits
+pthread_key_t g_buf_key;
+pthread_once_t g_buf_key_once = PTHREAD_ONCE_INIT;
+
+void buf_destructor(void *buf) {
+    if (buf) {
+        free(buf);
+    }
+}
+
+void buf_key_init() {
+    pthread_key_create(&g_buf_key, buf_destructor);
+}
+
+// Returns a thread-local buffer, allocating it if necessary.
+// Registered with pthread_key so it's freed on thread exit.
+unsigned char *get_swap_buf() {
+    if (!g_swap_buf) {
+        pthread_once(&g_buf_key_once, buf_key_init);
+        g_swap_buf = static_cast<unsigned char *>(malloc(MAX_REPLY_BUF));
+        if (g_swap_buf) {
+            pthread_setspecific(g_buf_key, g_swap_buf);
+        }
+    }
+    return g_swap_buf;
+}
+
+// Track the active swap buffer address to intercept BC_FREE_BUFFER
+thread_local void *g_active_swap_ptr = nullptr;
 
 struct binder_transaction_data_sg_local {
     binder_transaction_data transaction_data;
@@ -153,8 +184,6 @@ void process_transaction(const binder_transaction_data &txn) {
 }
 
 // Copy reply to swap buffer, filter it, and replace the pointer.
-// The app will later send BC_FREE_BUFFER with our swap buffer address,
-// which we intercept in process_write to prevent kernel from freeing it.
 bool swap_reply_buffer(binder_transaction_data *txn) {
     if (!txn || txn->data_size == 0 || txn->data.ptr.buffer == 0) return false;
 
@@ -172,20 +201,26 @@ bool swap_reply_buffer(binder_transaction_data *txn) {
         return false;
     }
 
-    std::memcpy(g_swap_buf, reinterpret_cast<const void *>(txn->data.ptr.buffer), data_size);
-    if (offsets_size > 0 && txn->data.ptr.offsets != 0) {
-        std::memcpy(g_swap_buf + offsets_off, reinterpret_cast<const void *>(txn->data.ptr.offsets), offsets_size);
+    unsigned char *buf = get_swap_buf();
+    if (!buf) {
+        log_error("swap: failed to allocate swap buffer");
+        return false;
     }
 
-    scan_sm_reply_for_strings(g_swap_buf, data_size);
-
-    txn->data.ptr.buffer = reinterpret_cast<binder_uintptr_t>(g_swap_buf);
+    std::memcpy(buf, reinterpret_cast<const void *>(txn->data.ptr.buffer), data_size);
     if (offsets_size > 0 && txn->data.ptr.offsets != 0) {
-        txn->data.ptr.offsets = reinterpret_cast<binder_uintptr_t>(g_swap_buf + offsets_off);
+        std::memcpy(buf + offsets_off, reinterpret_cast<const void *>(txn->data.ptr.offsets), offsets_size);
     }
 
-    g_active_swap_ptr = g_swap_buf;
-    log_info("swap: replaced reply buffer with POD swap (%zu bytes)", copy_size);
+    scan_sm_reply_for_strings(buf, data_size);
+
+    txn->data.ptr.buffer = reinterpret_cast<binder_uintptr_t>(buf);
+    if (offsets_size > 0 && txn->data.ptr.offsets != 0) {
+        txn->data.ptr.offsets = reinterpret_cast<binder_uintptr_t>(buf + offsets_off);
+    }
+
+    g_active_swap_ptr = buf;
+    log_info("swap: replaced reply buffer with lazy swap (%zu bytes)", copy_size);
     return true;
 }
 
