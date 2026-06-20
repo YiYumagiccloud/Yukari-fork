@@ -30,10 +30,12 @@ namespace {
 using IoctlFn = int (*)(int, unsigned long, void *);
 IoctlFn g_original_ioctl = nullptr;
 bool g_hook_installed = false;
-bool g_enhanced_mode = false; // Kept for compatibility, but no longer used for swap
+bool g_enhanced_mode = false;
 
-// Thread local state to track pending ServiceManager list replies
-thread_local int g_pending_sm_list_replies = 0;
+// Thread local: whether the current thread has a pending synchronous
+// transaction to handle 0 (servicemanager). If so, the next BR_REPLY
+// will be scanned for service-name strings.
+thread_local bool g_pending_sm_reply = false;
 
 struct binder_transaction_data_sg_local {
     binder_transaction_data transaction_data;
@@ -82,6 +84,8 @@ void overwrite_utf16(char16_t *chars, int32_t len) {
     for (int32_t i = 0; i < len; ++i) chars[i] = u'_';
 }
 
+// Reads a parcel string16 at a given offset, checks for keyword, and overwrites if matched.
+// Returns bytes consumed (including padding) if string exists, 0 otherwise.
 size_t process_string16(uint8_t *parcel, size_t size, size_t off, bool &hit) {
     if (off + sizeof(int32_t) > size) return 0;
     int32_t len = 0;
@@ -98,54 +102,62 @@ size_t process_string16(uint8_t *parcel, size_t size, size_t off, bool &hit) {
     if (hide_service(value)) {
         overwrite_utf16(chars, len);
         hit = true;
-        log_info("scrubbed service string: %s", value.c_str());
+        log_info("scrubbed service string in SM reply: %s", value.c_str());
     }
     return next_off - off;
 }
 
-void filter_list_services_reply(uint8_t *parcel, size_t size) {
+// Safely scan a ServiceManager reply buffer for String16 values containing
+// ROM keywords. This works for listServices (String[]), getServiceDebugInfo
+// (ServiceDebugInfo[] which contains String16 name), and any other SM reply
+// that embeds service names as String16.
+//
+// The is_parcel_str16 validator is extremely strict (alignment, length,
+// null-terminator, printable-ASCII-only), so false positives on binary
+// data are virtually impossible.
+void scan_sm_reply_for_strings(uint8_t *parcel, size_t size) {
     if (!parcel || size < sizeof(int32_t)) return;
-    size_t pos = 0;
-    pos += sizeof(int32_t); // Skip status_t (exception code)
-    if (pos >= size) return;
+    int total_hits = 0;
 
-    int32_t array_len = 0;
-    std::memcpy(&array_len, parcel + pos, sizeof(array_len));
-    pos += sizeof(int32_t);
-    if (array_len <= 0 || array_len > 1024) return;
-
-    for (int32_t i = 0; i < array_len; ++i) {
+    // Walk the buffer 4 bytes at a time, looking for valid String16 structures.
+    for (size_t off = 0; off + sizeof(int32_t) <= size; off += sizeof(uint32_t)) {
         bool hit = false;
-        size_t consumed = process_string16(parcel, size, pos, hit);
-        if (consumed == 0) break;
-        pos += consumed;
+        size_t consumed = process_string16(parcel, size, off, hit);
+        if (hit) ++total_hits;
+        // consumed > 0 means we found a valid String16 (hit or not).
+        // We can optionally skip past it, but scanning every 4 bytes is
+        // safer and the overhead is negligible for typical SM replies.
+    }
+
+    if (total_hits > 0) {
+        log_info("scan_sm_reply: filtered %d service string(s)", total_hits);
     }
 }
 
 void process_transaction(const binder_transaction_data &txn) {
     if (txn.data_size == 0 || txn.data.ptr.buffer == 0) return;
     if (txn.target.handle != 0) return; // Only ServiceManager
+    if (txn.flags & TF_ONE_WAY) return;  // Only synchronous transactions get replies
 
+    g_pending_sm_reply = true;
+
+    // For GET_SERVICE / CHECK_SERVICE, filter the service name in the request.
     uint32_t code = txn.code;
     if (code == SVC_GET_SERVICE || code == SVC_CHECK_SERVICE) {
-        if ((txn.flags & TF_ONE_WAY) == 0) {
-            auto *parcel = reinterpret_cast<uint8_t *>(txn.data.ptr.buffer);
-            // Parcel format: [strict_mode(4)] [work_source(4)] [header(4)] [interface_token] [service_name]
-            size_t pos = 12; // Skip the 3 int32_t header
-            bool hit = false;
-            // Skip interface token
-            size_t consumed = process_string16(parcel, static_cast<size_t>(txn.data_size), pos, hit);
-            if (consumed > 0) {
-                pos += consumed;
-                // Next string is the service name
-                process_string16(parcel, static_cast<size_t>(txn.data_size), pos, hit);
-            }
-        }
-    } else if (code == SVC_LIST_SERVICES) {
-        if ((txn.flags & TF_ONE_WAY) == 0) {
-            ++g_pending_sm_list_replies;
+        auto *parcel = reinterpret_cast<uint8_t *>(txn.data.ptr.buffer);
+        // Parcel format: [strict_mode(4)] [work_source(4)] [header(4)] [interface_token] [service_name]
+        size_t pos = 12; // Skip the 3 int32_t header
+        bool hit = false;
+        // Skip interface token
+        size_t consumed = process_string16(parcel, static_cast<size_t>(txn.data_size), pos, hit);
+        if (consumed > 0) {
+            pos += consumed;
+            // Next string is the service name
+            process_string16(parcel, static_cast<size_t>(txn.data_size), pos, hit);
         }
     }
+    // For all other SM transactions (listServices, getServiceDebugInfo, etc.),
+    // we don't filter the request, but we will scan the reply.
 }
 
 // Helper to make a read-only binder buffer writable temporarily
@@ -159,30 +171,21 @@ bool make_writable(void *addr, size_t len) {
 }
 
 void process_reply(binder_transaction_data *txn) {
-    if (g_pending_sm_list_replies <= 0) return;
-    --g_pending_sm_list_replies;
+    if (!g_pending_sm_reply) return;
+    g_pending_sm_reply = false;
 
     if (!txn || txn->data_size == 0 || txn->data.ptr.buffer == 0) return;
 
     auto *parcel = reinterpret_cast<uint8_t *>(txn->data.ptr.buffer);
     const size_t data_size = static_cast<size_t>(txn->data_size);
 
-    // Attempt to write to the buffer. If it's read-only (from kernel mmap),
-    // temporarily make it writable using mprotect.
-    bool made_writable = false;
-    if (make_writable(parcel, data_size)) {
-        // To check if it was actually read-only before, we'd need to parse /proc/maps.
-        // Instead, just try to write. If it segfaults, we can't catch it here.
-        // But mprotect on binder mmap should work safely.
-        made_writable = true; // Assume we might have changed it
-    }
+    // Use mprotect to ensure the buffer is writable (binder mmap may be read-only)
+    make_writable(parcel, data_size);
 
-    filter_list_services_reply(parcel, data_size);
-    log_info("filtered listServices reply (mprotect ensured writability)");
-}
-
-void forget_reply() {
-    if (g_pending_sm_list_replies > 0) --g_pending_sm_list_replies;
+    // Scan the reply for any String16 containing ROM keywords.
+    // This covers listServices, getServiceDebugInfo, and any other
+    // ServiceManager reply that embeds service names.
+    scan_sm_reply_for_strings(parcel, data_size);
 }
 
 void process_write(binder_write_read *bwr) {
@@ -236,7 +239,7 @@ void process_read(binder_write_read *bwr) {
             }
             case BR_DEAD_REPLY:
             case BR_FAILED_REPLY:
-                forget_reply();
+                g_pending_sm_reply = false;
                 break;
             case BR_NOOP:
             case BR_TRANSACTION_COMPLETE:
@@ -305,7 +308,6 @@ void install_hooks(zygisk::Api *api, bool enhanced_mode) {
         return;
     }
 
-    // enhanced_mode is kept for config compatibility but no longer affects logic
     g_enhanced_mode = enhanced_mode;
     const auto mappings = find_mappings();
     if (mappings.empty()) {
