@@ -57,6 +57,7 @@ jobs:
           unzip -p out/Yukari.zip module.prop | grep -q 'version='
           unzip -p out/Yukari.zip zygisk/arm64-v8a.so > /tmp/yukari.so
           readelf -Ws /tmp/yukari.so | grep -q 'zygisk_module_entry'
+          ! readelf -Ws /tmp/yukari.so | grep -Eq ' hook_(ioctl|transact_native)$'
           ! readelf -Ws /tmp/yukari.so | grep -q 'zygisk_module_create'
 
       - name: Upload Yukari module

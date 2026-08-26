@@ -1,6 +1,5 @@
 #include "service_match.h"
 
-#include <cctype>
 #include <string>
 
 namespace {
@@ -17,25 +16,41 @@ constexpr const char *kExactServices[] = {
     "profile",
 };
 
-std::string to_lower(const std::string &input) {
-    std::string out;
-    out.reserve(input.size());
-    for (unsigned char c : input) {
-        out.push_back(static_cast<char>(std::tolower(c)));
+char ascii_lower(char c) {
+    return (c >= 'A' && c <= 'Z') ? static_cast<char>(c + ('a' - 'A')) : c;
+}
+
+bool equals_ci(const std::string &value, const char *needle) {
+    if (!needle) return false;
+    size_t i = 0;
+    for (; needle[i] != '\0'; ++i) {
+        if (i >= value.size() || ascii_lower(value[i]) != needle[i]) return false;
     }
-    return out;
+    return i == value.size();
+}
+
+bool contains_ci(const std::string &value, const char *needle) {
+    if (!needle || *needle == '\0') return false;
+    const size_t needle_size = std::char_traits<char>::length(needle);
+    if (needle_size > value.size()) return false;
+    for (size_t i = 0; i + needle_size <= value.size(); ++i) {
+        size_t j = 0;
+        for (; j < needle_size; ++j) {
+            if (ascii_lower(value[i + j]) != needle[j]) break;
+        }
+        if (j == needle_size) return true;
+    }
+    return false;
 }
 } // namespace
 
 bool hide_service(const std::string &service_name) {
-    const std::string lower = to_lower(service_name);
-
     for (const char *service : kExactServices) {
-        if (lower == service) return true;
+        if (equals_ci(service_name, service)) return true;
     }
 
     for (const char *keyword : kKeywords) {
-        if (lower.find(keyword) != std::string::npos) return true;
+        if (contains_ci(service_name, keyword)) return true;
     }
     return false;
 }

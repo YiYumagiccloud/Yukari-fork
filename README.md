@@ -1,46 +1,38 @@
 # Yukari
 
-[English](README.md) | [中文](README.zh-CN.md)
+Yukari is a target-scoped Zygisk module that hides custom-ROM ServiceManager
+signals. Matching is ASCII case-insensitive for `lineage`, `crdroid`, `aospa`,
+`pixelexperience`, `omnirom`, `protonaosp`, plus the exact service name
+`profile`.
 
----
+The preferred implementation hooks `android.os.BinderProxy.transactNative` via
+Zygisk's JNI hook API. ServiceManager enumeration/debug replies are filtered at
+the Parcel layer (direct `getService`/`checkService` lookups are left intact to
+avoid startup null-Binder failures);
+so libbinder PLT/GOT relocations are not modified. `listServices` and
+`getServiceDebugInfo` are filtered without changing UTF-16 string lengths, and
+`ServiceManager.sCache` is cleaned during app specialization. Systems without
+the stable JNI entry point use the legacy ioctl filter as a fallback; its PLT
+replacement points at an anonymous RX trampoline.
 
-Zygisk module that hides selected custom-ROM service signals from configured target applications.
+Private ELF symbols are hidden with a linker version script and stripped from
+release artifacts. The module mapping can still be visible in `/proc/self/maps`
+because the JNI callback must remain resident; unloading it safely would
+require relocating the complete C++ runtime and is intentionally avoided.
 
-### Fixed service keywords
+See [README.zh-CN.md](README.zh-CN.md) for the detailed design and verification
+commands.
 
-Matching is ASCII case-insensitive and built into the module:
-
-- `lineage`
-- `crdroid`
-- `aospa`
-- `pixelexperience`
-- `omnirom`
-- `protonaosp`
-
-Users configure target applications only. The module does not stop or unregister services globally; filtering is scoped to selected application processes.
-
-### Current native behavior
-
-- Zygisk app specialization matches configured target packages.
-- Java `ServiceManager.sCache` entries containing fixed ROM keywords are removed.
-- Binder request filtering rewrites matching service lookup names before they reach ServiceManager.
-- Binder reply filtering uses a safe buffer swap mechanism to scan and filter all ServiceManager replies (including `listServices` and `getServiceDebugInfo`). This prevents apps from enumerating hidden services.
-- Binder interception uses Zygisk's standard PLT hook API instead of patching libc inline.
-
-Request/reply filtering uses same-length placeholders instead of changing Parcel size.
-
-### Configuration
+## Configuration
 
 ```json
 {
   "enabled": true,
-  "targets": [
-    "com.example.app"
-  ]
+  "targets": ["com.example.app"]
 }
 ```
 
-### Build
+## Build
 
 ```bash
 gradle :module:assembleRelease
