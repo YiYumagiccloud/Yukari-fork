@@ -1,0 +1,104 @@
+name: 构建模块
+
+# 触发条件：推送 main/dev 分支、PR、手动触发
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+  workflow_dispatch:
+
+# 需要写入权限以创建 Release 和上传附件
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: 安装 Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: 安装 Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: 注入版本信息到 module.prop
+        run: |
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          RUN_NUMBER="${{ github.run_number }}"
+          BRANCH_NAME=${GITHUB_REF#refs/heads/}
+          if [ "$BRANCH_NAME" = "dev" ]; then
+            sed -i "s/^version=.*/version=1.0.0-dev (${RUN_NUMBER}-${SHORT_SHA})/" module/module.prop
+          else
+            sed -i "s/^version=.*/version=1.0.0 (${RUN_NUMBER}-${SHORT_SHA})/" module/module.prop
+          fi
+          sed -i "s/^versionCode=.*/versionCode=${RUN_NUMBER}/" module/module.prop
+          echo "Branch: $BRANCH_NAME"
+          echo "Version: $(grep '^version=' module/module.prop)"
+          cat module/module.prop
+
+      - name: 编译 Native 库
+        run: gradle :module:assembleRelease
+
+      - name: 打包 Magisk 模块
+        run: bash scripts/package.sh
+
+      - name: 验证模块包完整性
+        run: |
+          test -f out/Yukari.zip
+          unzip -l out/Yukari.zip
+          unzip -l out/Yukari.zip | grep -q 'module.prop'
+          unzip -l out/Yukari.zip | grep -q 'zygisk/arm64-v8a.so'
+          unzip -l out/Yukari.zip | grep -q 'action.sh'
+          unzip -l out/Yukari.zip | grep -q 'customize.sh'
+          unzip -p out/Yukari.zip module.prop | grep -q 'version='
+          unzip -p out/Yukari.zip zygisk/arm64-v8a.so > /tmp/yukari.so
+          readelf -Ws /tmp/yukari.so | grep -q 'zygisk_module_entry'
+          ! readelf -Ws /tmp/yukari.so | grep -q 'zygisk_module_create'
+
+      - name: 上传构建产物（GitHub Artifacts，保留30天）
+        uses: actions/upload-artifact@v4
+        with:
+          name: Yukari-${{ github.sha }}
+          path: out/Yukari.zip
+          if-no-files-found: error
+          retention-days: 30
+
+      # ---------- 新增：自动发布到 Releases ----------
+      - name: 创建 Release 并上传模块（仅 main 分支推送时触发）
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          # 标签名：使用构建号+commit短哈希，确保唯一性
+          tag_name: build-${{ github.run_number }}-${{ github.sha }}
+          # Release 标题：包含分支和构建时间
+          name: "自动构建 #${{ github.run_number }} - ${{ github.sha }}"
+          # 是否标记为预发布（未稳定版本建议开启）
+          prerelease: true
+          # 自动生成变更日志（基于 PR 标题）
+          generate_release_notes: true
+          # 要上传的文件（支持通配符）
+          files: |
+            out/Yukari.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 上传 Native 编译失败时的诊断信息
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Yukari-native-diagnostics-${{ github.sha }}
+          path: |
+            module/build/outputs/
+            module/build/intermediates/cxx/
+            module/build/intermediates/stripped_native_libs/
+          if-no-files-found: ignore
+          retention-days: 7
