@@ -11,6 +11,8 @@ constexpr const char *kKeywords[] = {
     "pixelexperience",
     "omnirom",
     "protonaosp",
+    "bliss",     // 新增：匹配 BlissROM 服务
+    "adbroot",   // 新增：匹配 adbroot_service
 };
 
 constexpr const char *kExactServices[] = {
