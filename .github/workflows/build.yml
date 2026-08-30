@@ -69,17 +69,15 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-      # ---------- 新增：自动发布到 Releases ----------
-      - name: 创建 Release 并上传模块（仅 main 分支推送时触发）
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      # ---------- 发布到 Releases（无分支限制，每次运行都创建） ----------
+      - name: 创建 Release 并上传模块
         uses: softprops/action-gh-release@v2
         with:
-          # 标签名：使用构建号+commit短哈希，确保唯一性
-          tag_name: build-${{ github.run_number }}-${{ github.sha }}
+          tag_name: build-${{ github.run_id }}
           # Release 标题：包含分支和构建时间
-          name: "自动构建 #${{ github.run_number }} - ${{ github.sha }}"
+          name: "自动构建 #${{ github.run_id }} - ${{ github.sha }}"
           # 是否标记为预发布（未稳定版本建议开启）
-          prerelease: true
+          prerelease: false
           # 自动生成变更日志（基于 PR 标题）
           generate_release_notes: true
           # 要上传的文件（支持通配符）
